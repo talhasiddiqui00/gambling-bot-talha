@@ -1,25 +1,25 @@
-"""
-Highrise Blackjack Gambling Bot (blackjack_bot.py)
-Standalone bot - Blackjack rounds only. No emotes, VIP, DJ, or trivia.
+# """
+# Highrise Blackjack Gambling Bot (blackjack_bot.py)
+# Standalone bot - Blackjack rounds only. No emotes, VIP, DJ, or trivia.
 
-Round flow:
-  1. "New round in 1 min" announcement
-  2. 20s betting window (tip gold to bet) with 10s/5s warnings
-  3. Betting closes - late tips are refunded, not counted
-  4. 1s grace, then "rolling the cards..." + 2s delay
-  5. Real per-player turns: each bettor is dealt 2 cards and can type
-     !hit / !stand on their own turn (20s per turn, auto-stand on timeout)
-  6. Dealer reveals hole card and auto-plays (hits while under 17)
-  7. Results + payouts announced, winners tipped
-  8. Round data cleared, next round begins
+# Round flow:
+#   1. "New round in 1 min" announcement
+#   2. 20s betting window (tip gold to bet) with 10s/5s warnings
+#   3. Betting closes - late tips are refunded, not counted
+#   4. 1s grace, then "rolling the cards..." + 2s delay
+#   5. Real per-player turns: each bettor is dealt 2 cards and can type
+#      !hit / !stand on their own turn (20s per turn, auto-stand on timeout)
+#   6. Dealer reveals hole card and auto-plays (hits while under 17)
+#   7. Results + payouts announced, winners tipped
+#   8. Round data cleared, next round begins
 
-Payouts: standard 2x on a win, 2.5x on a natural Blackjack, push returns
-the exact bet, loss forfeits the bet. Real random cards are dealt every
-round - nothing is rigged. A house exposure cap limits how much total
-betting is accepted in a single round relative to the bot's own gold
-balance, so one unlucky round can't wipe it out - this is honest risk
-management, not manipulating outcomes.
-"""
+# Payouts: standard 2x on a win, 2.5x on a natural Blackjack, push returns
+# the exact bet, loss forfeits the bet. Real random cards are dealt every
+# round - nothing is rigged. A house exposure cap limits how much total
+# betting is accepted in a single round relative to the bot's own gold
+# balance, so one unlucky round can't wipe it out - this is honest risk
+# management, not manipulating outcomes.
+# """
 
 import os
 import sys
@@ -47,7 +47,7 @@ os.environ["PYTHONUNBUFFERED"] = "1"
 # token). Double-check this on Highrise's bot settings page and replace it below,
 # or the bot won't be able to connect at all.
 ROOM_ID = "6a28b5b000b6151bd4c9641e"
-API_TOKEN = "6a4def6419de7d46e5b4edc4"  # <-- VERIFY/REPLACE THIS
+API_TOKEN = "ca3eb4565417e356e291ea4832d8df1422365d5fa2aa528827cba5bc55655a04"  # <-- VERIFY/REPLACE THIS
 
 DATA_FILE = "./blackjack_data.json"
 
