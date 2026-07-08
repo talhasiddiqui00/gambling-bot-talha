@@ -590,7 +590,7 @@ class Bot(BaseBot):
         if not is_owner:
             return
 
-        if clean_msg == "!set":
+        if clean_msg == "!gset":
             try:
                 room_users = await self.highrise.get_room_users()
                 position = None
