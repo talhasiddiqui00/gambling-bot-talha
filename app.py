@@ -3,15 +3,16 @@
 # Standalone bot - Blackjack rounds only. No emotes, VIP, DJ, or trivia.
 
 # Round flow:
-#   1. "New round in 1 min" announcement
-#   2. 20s betting window (tip gold to bet) with 10s/5s warnings
-#   3. Betting closes - late tips are refunded, not counted
-#   4. 1s grace, then "rolling the cards..." + 2s delay
-#   5. Real per-player turns: each bettor is dealt 2 cards and can type
+#   1. "New round in 3 min" announcement
+#   2. Rules are posted, then a 1-min reading pause before betting opens
+#   3. 20s betting window (tip gold to bet) with 10s/5s warnings
+#   4. Betting closes - late tips are refunded, not counted
+#   5. 1s grace, then "rolling the cards..." + 2s delay
+#   6. Real per-player turns: each bettor is dealt 2 cards and can type
 #      !hit / !stand on their own turn (20s per turn, auto-stand on timeout)
-#   6. Dealer reveals hole card and auto-plays (hits while under 17)
-#   7. Results + payouts announced, winners tipped
-#   8. Round data cleared, next round begins
+#   7. Dealer reveals hole card and auto-plays (hits while under 17)
+#   8. Results + payouts announced, winners tipped
+#   9. Round data cleared, next round begins
 
 # Payouts: standard 2x on a win, 2.5x on a natural Blackjack, push returns
 # the exact bet, loss forfeits the bet. Real random cards are dealt every
@@ -318,8 +319,8 @@ class Bot(BaseBot):
             self._stranded_bets = {}
 
         while True:
-            await self.announce("🎰 A new <color=#FFD700><b>Blackjack</b></color> round starts in <b>1 min</b>! Get your gold ready! 🃏")
-            await asyncio.sleep(60)
+            await self.announce("🎰 A new <color=#FFD700><b>Blackjack</b></color> round starts in <b>3 min</b>! Get your gold ready! 🃏")
+            await asyncio.sleep(180)
 
             self.current_bets = {}
             self.betting_open = True
@@ -327,8 +328,11 @@ class Bot(BaseBot):
             self.wallet_cache_gold = fetched_gold if fetched_gold is not None else 0
             self._save_state(pending_bets={})
 
+            await self.announce(RULES_TEXT)
+            await asyncio.sleep(60)  # give players at least 1 min to read the rules before betting opens
+
             await self.announce(
-                RULES_TEXT + "\n\n💰 <color=#00FF00><b>BETTING IS OPEN for 20 seconds!</b></color> "
+                "💰 <color=#00FF00><b>BETTING IS OPEN for 20 seconds!</b></color> "
                 "Tip any gold amount to the bot right now to place your bet!"
             )
 
@@ -487,13 +491,13 @@ class Bot(BaseBot):
             return
 
         if not self.betting_open:
-            # Round is closed (or hasn't opened) - refund, don't silently keep it.
-            await self.queue_payout(sender.id, sender.username, tip.amount, "bj_late_refund")
+            # Round is closed (or hasn't opened yet / rules are being read) - this
+            # isn't a bet, so treat it as a genuine gift tip to the bot and keep it.
             try:
                 await self.highrise.send_whisper(
                     sender.id,
-                    f"⏰ Betting is closed right now, so your {tip.amount}g tip didn't count as a bet - "
-                    "it's being refunded. Watch chat for when the next round opens!"
+                    f"💖 Thanks so much for the {tip.amount}g tip! Betting isn't open right now, so this is just "
+                    "a gift to the bot - keep an eye on chat for when the next round's betting window opens!"
                 )
             except Exception:
                 pass
