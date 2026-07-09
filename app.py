@@ -21,7 +21,7 @@
 # if they didn't type !bet themselves. Tips sent after betting closes are
 # refunded with a whisper explaining the round is already underway.
 
-# Payouts: standard 2x on a win, 2.2x on a natural Blackjack, push returns
+# Payouts: 1.9x on a win, 2.0x on a natural Blackjack, push returns
 # the exact bet, loss forfeits the bet. Real random cards are dealt every
 # round - nothing is rigged. The dealer hits on a soft 17 (standard, disclosed
 # house rule) - a small, honest mathematical edge applied identically to
@@ -79,8 +79,8 @@ DENOMINATION_VALUES = [
     (100, "100g"), (50, "50g"), (10, "10g"), (5, "5g"), (1, "1g"),
 ]
 
-WIN_MULTIPLIER = 2.0
-BLACKJACK_MULTIPLIER = 2.2  # disclosed house-edge tweak - still beats a plain win's 2x
+WIN_MULTIPLIER = 1.9  # disclosed house-edge tweak - a real win still profits, just slightly less than even money
+BLACKJACK_MULTIPLIER = 2.0  # disclosed house-edge tweak - still a small bonus over a plain win's 1.9x
 BET_WINDOW_SECONDS = 20
 PLAYER_TURN_SECONDS = 15  # was 20 - shortened per new rules
 ROUND_STARTS_IN_SECONDS = 30  # was 60 - "round starts in 30s" wait before betting opens
@@ -111,8 +111,8 @@ RULES_TEXT = (
     "💰 Tip ANY amount of gold to the bot during the betting window - that's your bet!\n"
     "🂡 You'll get 2 cards. Type <b>!hit</b> (or <b>!h</b>) to draw another, or <b>!stand</b> (or <b>!s</b>) to hold.\n"
     "🎯 Get as close to 21 as you can WITHOUT going over - go over 21 and you bust (lose instantly).\n"
-    "👑 Beat the dealer's final hand to win <color=#FFD700><b>2x</b></color> your bet!\n"
-    "🎉 A natural Blackjack (21 with your first 2 cards) pays <color=#FFD700><b>2.2x</b></color>!\n"
+    "👑 Beat the dealer's final hand to win <color=#FFD700><b>1.9x</b></color> your bet!\n"
+    "🎉 A natural Blackjack (21 with your first 2 cards) pays <color=#FFD700><b>2.0x</b></color>!\n"
     "🤝 Tie the dealer = push, your bet is returned.\n"
     "🂠 Standard house rule: the dealer hits on a soft 17 instead of standing.\n"
     "💵 <b>Double Down:</b> if your first 2 cards total 9, 10, or 11, type <b>!double</b> (or <b>!dd</b>) and tip "
