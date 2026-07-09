@@ -1,33 +1,33 @@
-# """
-# Highrise Blackjack Gambling Bot (blackjack_bot.py)
-# Standalone bot - Blackjack rounds only. No emotes, VIP, DJ, or trivia.
+"""
+Highrise Blackjack Gambling Bot (blackjack_bot.py)
+Standalone bot - Blackjack rounds only. No emotes, VIP, DJ, or trivia.
 
-# EVERY PLAYER'S GAME RUNS INDEPENDENTLY. There is no shared "room round" -
-# each person tips gold at their own pace, and when they type !bet, a
-# personal Blackjack round starts just for them, running concurrently with
-# anyone else's game. Two, five, ten people can all be mid-hand at the same
-# time; each game only listens to its own player's commands.
+EVERY PLAYER'S GAME RUNS INDEPENDENTLY. There is no shared "room round" -
+each person tips gold at their own pace, and when they type !bet, a
+personal Blackjack round starts just for them, running concurrently with
+anyone else's game. Two, five, ten people can all be mid-hand at the same
+time; each game only listens to its own player's commands.
 
-# Flow for an individual player:
-#   1. Tip the bot any amount of gold, any time - it's added to your personal
-#      pending balance (whispered confirmation of your running total).
-#   2. Type !bet - your whole pending balance becomes your bet (min 5g, max
-#      1000g; anything tipped over the max is refunded immediately).
-#   3. 20 seconds later, your own 2 cards + a dealer hand are dealt, announced
-#      publicly, and it's just your turn: !hit/!h or !stand/!s (15s per
-#      decision), or !double/!dd on a starting 9/10/11 (confirm by tipping a
-#      matching amount within 10s).
-#   4. Dealer auto-plays (hits on soft 17), your result + payout is announced.
-#   5. Your game clears - tip and !bet again whenever you like.
+Flow for an individual player:
+  1. Tip the bot any amount of gold, any time - it's added to your personal
+     pending balance (whispered confirmation of your running total).
+  2. Type !bet - your whole pending balance becomes your bet (min 5g, max
+     1000g; anything tipped over the max is refunded immediately).
+  3. 20 seconds later, your own 2 cards + a dealer hand are dealt, announced
+     publicly, and it's just your turn: !hit/!h or !stand/!s (15s per
+     decision), or !double/!dd on a starting 9/10/11 (confirm by tipping a
+     matching amount within 10s).
+  4. Dealer auto-plays (hits on soft 17), your result + payout is announced.
+  5. Your game clears - tip and !bet again whenever you like.
 
-# Payouts: 1.9x on a win, 2.0x on a natural Blackjack, push returns the exact
-# bet, loss forfeits the bet. 5-Card Charlie (5 cards, no bust) auto-wins.
-# Real random cards are dealt every game - nothing is rigged. Before starting
-# any individual game, the bot checks that a worst-case payout on that bet
-# wouldn't exceed a safe fraction of its own gold balance, refunding the bet
-# and asking for a smaller one if it would - honest risk management, not
-# manipulating outcomes.
-# """
+Payouts: 1.9x on a win, 2.0x on a natural Blackjack, push returns the exact
+bet, loss forfeits the bet. 5-Card Charlie (5 cards, no bust) auto-wins.
+Real random cards are dealt every game - nothing is rigged. Before starting
+any individual game, the bot checks that a worst-case payout on that bet
+wouldn't exceed a safe fraction of its own gold balance, refunding the bet
+and asking for a smaller one if it would - honest risk management, not
+manipulating outcomes.
+"""
 
 import os
 import sys
@@ -48,12 +48,6 @@ sys.stdout.reconfigure(line_buffering=True)
 os.environ["PYTHONUNBUFFERED"] = "1"
 
 # --- ROOM / BOT CREDENTIALS ---
-# ROOM_ID is the same room as your main bot.
-# WARNING: the API_TOKEN below is a placeholder built from the value you gave me.
-# It's only 24 hex characters, the same shape as a Room ID / object id - Highrise
-# bot API tokens are normally much longer (60+ characters, like your main bot's
-# token). Double-check this on Highrise's bot settings page and replace it below,
-# or the bot won't be able to connect at all.
 ROOM_ID = "6a28b5b000b6151bd4c9641e"
 API_TOKEN = "ca3eb4565417e356e291ea4832d8df1422365d5fa2aa528827cba5bc55655a04"  # <-- VERIFY/REPLACE THIS
 
@@ -64,33 +58,43 @@ GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "").strip()
 GIST_ID = os.environ.get("GIST_ID", "").strip()
 GIST_FILENAME = "blackjack_data.json"
 
-# Gold-bar tip denominations available on Highrise, used both to accept bets
-# and to pay out winnings (payouts are decomposed into these exact bars).
+# Optional: your own public URL (e.g. https://your-app.onrender.com). If set,
+# the bot will ping its own /health endpoint periodically. NOTE: this only
+# helps keep a process that is ALREADY awake from going idle on some hosts -
+# it does NOT wake a process back up once the host has fully spun it down.
+# For real 24/7 uptime on a free-tier host you still need an EXTERNAL
+# monitor - see the comment above run_web_server() for details.
+SELF_URL = os.environ.get("SELF_URL", "").strip()
+
 TIP_MAP = {
     "1g": "gold_bar_1", "5g": "gold_bar_5", "10g": "gold_bar_10",
     "50g": "gold_bar_50", "100g": "gold_bar_100", "500g": "gold_bar_500",
     "1k": "gold_bar_1k", "5k": "gold_bar_5k", "10k": "gold_bar_10k",
 }
-# Ordered largest-to-smallest so payouts use the fewest possible bars.
 DENOMINATION_VALUES = [
     (10000, "10k"), (5000, "5k"), (1000, "1k"), (500, "500g"),
     (100, "100g"), (50, "50g"), (10, "10g"), (5, "5g"), (1, "1g"),
 ]
 
-WIN_MULTIPLIER = 1.9  # disclosed house-edge tweak - a real win still profits, just slightly less than even money
-BLACKJACK_MULTIPLIER = 2.0  # disclosed house-edge tweak - still a small bonus over a plain win's 1.9x
+WIN_MULTIPLIER = 1.9
+BLACKJACK_MULTIPLIER = 2.0
 PLAYER_TURN_SECONDS = 15
-PERSONAL_ROUND_DELAY_SECONDS = 20  # wait after !bet before that player's cards are dealt
-DOUBLE_CONFIRM_SECONDS = 10  # window to tip a matching bet to confirm a double-down
-DOUBLE_ELIGIBLE_TOTALS = (9, 10, 11)  # standard double-down rule: first two cards only
-CHARLIE_CARD_COUNT = 5  # 5-card Charlie: 5 cards without busting = automatic win
+PERSONAL_ROUND_DELAY_SECONDS = 20
+DOUBLE_CONFIRM_SECONDS = 10
+DOUBLE_ELIGIBLE_TOTALS = (9, 10, 11)
+CHARLIE_CARD_COUNT = 5
 MIN_BET = 5
 MAX_BET = 1000
-# The bot won't start an individual game if its worst-case payout on that bet
-# would exceed this fraction of the bot's current gold balance. This is a
-# real safety cap, not a rigged deck.
 MAX_EXPOSURE_FRACTION = 0.5
 WELCOME_INTERVAL_SECONDS = 60
+
+# How many times / how often to re-assert the bot's saved position right
+# after connecting. Highrise can silently snap a freshly-connected bot back
+# to the room's default spawn point moments after the first teleport call
+# "wins" the race, which is what causes the visible jump back to the crowd
+# spawn even though !gset was already used. Re-teleporting a few times in
+# the first several seconds makes the saved position "stick".
+PLACEMENT_RETRY_DELAYS = (0.3, 1.5, 3.5, 6.0)
 
 SUITS = ["♠", "♥", "♦", "♣"]
 RANKS = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"]
@@ -152,8 +156,6 @@ def hand_value(cards: list) -> int:
 
 
 def is_soft_hand(cards: list) -> bool:
-    # "Soft" means at least one Ace is still being counted as 11 (not
-    # reduced to 1). Used for the standard "dealer hits soft 17" rule.
     hard_total = sum(1 if r == "A" else RANK_VALUES[r] for r, _ in cards)
     return hand_value(cards) != hard_total
 
@@ -163,8 +165,6 @@ def is_blackjack(cards: list) -> bool:
 
 
 def decompose_amount(amount: int) -> list:
-    # Greedy breakdown into available gold-bar denominations. Since "1g" is
-    # always available, any non-negative integer amount can be represented.
     parts = []
     remaining = int(amount)
     for value, key in DENOMINATION_VALUES:
@@ -175,8 +175,6 @@ def decompose_amount(amount: int) -> list:
 
 
 def parse_bet_amount(text: str):
-    # Accepts formats like "100", "100g", "1k", "5k". Returns an int gold
-    # amount, or None if it couldn't be parsed.
     text = text.strip().lower()
     if not text:
         return None
@@ -198,6 +196,9 @@ def parse_bet_amount(text: str):
 
 
 class HealthCheckHandler(BaseHTTPRequestHandler):
+    # This is the endpoint an external uptime monitor should hit every few
+    # minutes to stop a free-tier host from spinning the process down (see
+    # the note near run_web_server()).
     def do_GET(self):
         self.send_response(200)
         self.send_header("Content-type", "text/plain")
@@ -220,9 +221,9 @@ class Bot(BaseBot):
         self.last_command_time = {}
 
         # --- per-player independent game state ---
-        self.pending_tips = {}   # user_id -> {"username", "amount"} - gold tipped but not yet turned into a bet
-        self.active_games = {}   # user_id -> game state dict, present only while that player's round is running
-        self.player_stats = {}   # user_id -> {"username", "rounds", "wins", "blackjacks", "charlies", "pushes", "losses"}
+        self.pending_tips = {}
+        self.active_games = {}
+        self.player_stats = {}
 
         self.tip_queue = asyncio.Queue()
 
@@ -283,9 +284,6 @@ class Bot(BaseBot):
                 self._gist_dirty = True
 
     def _load_startup_state(self) -> None:
-        # Recover the bot's saved position, and refund anyone whose gold was
-        # left stranded by a crash/redeploy - both untouched pending tips and
-        # bets already locked into a game that never got to resolve.
         data = None
         if self._gist_configured():
             data = self.fetch_gist_data()
@@ -300,7 +298,7 @@ class Bot(BaseBot):
         self.player_stats = data.get("player_stats", {}) or {}
         self._stranded_tips = data.get("pending_tips", {}) or {}
         self._stranded_bets = data.get("active_bets", {}) or {}
-        self._save_state()  # clears pending_tips/active_bets on disk immediately; refunded in on_start
+        self._save_state()
 
     def _save_state(self) -> None:
         try:
@@ -329,12 +327,11 @@ class Bot(BaseBot):
         return Position(pos["x"], pos["y"], pos["z"], pos["facing"])
 
     def record_result(self, uid: str, username: str, outcome: str) -> None:
-        # outcome is one of: "win", "blackjack", "charlie", "push", "lose"
         stats = self.player_stats.get(uid, {
             "username": username, "rounds": 0, "wins": 0, "blackjacks": 0, "charlies": 0, "pushes": 0, "losses": 0,
         })
-        stats.setdefault("charlies", 0)  # backfill for stats saved before this field existed
-        stats["username"] = username  # keep name fresh in case they changed it
+        stats.setdefault("charlies", 0)
+        stats["username"] = username
         stats["rounds"] += 1
         if outcome == "win":
             stats["wins"] += 1
@@ -357,7 +354,7 @@ class Bot(BaseBot):
             return 0.0
         return round((stats.get("wins", 0) / rounds) * 100, 1)
 
-    # --- tip payout queue (silent - round summary announces results, not each bar) ---
+    # --- tip payout queue ---
 
     async def process_tip_queue_worker(self):
         while True:
@@ -376,6 +373,11 @@ class Bot(BaseBot):
             await self.tip_queue.put((user_id, TIP_MAP[part], username, reason))
 
     async def connection_watchdog_loop(self) -> None:
+        # Only restarts the process when the websocket connection itself
+        # looks dead (repeated transport/timeout errors on a lightweight
+        # wallet fetch) - not on a fixed schedule, so it won't cause
+        # needless restarts (and therefore won't cause needless position
+        # flicker) while the bot is healthy and just sitting idle.
         consecutive_failures = 0
         while True:
             await asyncio.sleep(45)
@@ -390,12 +392,26 @@ class Bot(BaseBot):
                         os._exit(1)
 
     async def welcome_announce_loop(self) -> None:
-        # Repeats the welcome/commands message publicly every minute. Personal
-        # games run independently of this, so it's safe to post regardless of
-        # how many rounds are currently in progress.
         while True:
             await asyncio.sleep(WELCOME_INTERVAL_SECONDS)
             await self.announce(WELCOME_TEXT)
+
+    async def self_ping_loop(self) -> None:
+        # Optional: pings this bot's own public health-check URL every few
+        # minutes if SELF_URL is set. This can help keep an already-running
+        # process "warm" on some hosts, but it is NOT a substitute for an
+        # external uptime monitor - a process that has fully spun down
+        # can't ping itself back awake. Set SELF_URL and, more importantly,
+        # point an external monitor (UptimeRobot / cron-job.org / etc.) at
+        # the same URL for real 24/7 uptime.
+        if not SELF_URL:
+            return
+        while True:
+            await asyncio.sleep(240)
+            try:
+                await asyncio.to_thread(requests.get, SELF_URL, timeout=10)
+            except Exception as e:
+                print(f"[SELF-PING] Failed (non-fatal): {e}")
 
     # --- shared helpers ---
 
@@ -406,8 +422,6 @@ class Bot(BaseBot):
             print(f"[ANNOUNCE ERROR] {e}")
 
     async def get_wallet_gold(self):
-        # Returns None on a failed fetch (so callers know not to trust it),
-        # and an actual integer - including a real 0 - when the fetch worked.
         try:
             wallet = await self.highrise.get_wallet()
             return next((c.amount for c in wallet.content if c.type == "gold"), 0)
@@ -415,8 +429,6 @@ class Bot(BaseBot):
             return None
 
     async def refund_stranded_gold(self) -> None:
-        # Runs once at startup - refunds any pending tip balances and any bets
-        # already locked into a game when the previous instance went down.
         for uid, info in getattr(self, "_stranded_tips", {}).items():
             await self.queue_payout(uid, info.get("username", "player"), info.get("amount", 0), "bj_stranded_tip_refund")
         for uid, info in getattr(self, "_stranded_bets", {}).items():
@@ -474,7 +486,6 @@ class Bot(BaseBot):
                     await asyncio.sleep(1)
                 game["awaiting_action"] = False
 
-            # Dealer's turn
             dealer_cards = game["dealer_cards"]
             await self.announce(f"🂠 Dealer reveals: <b>{format_hand(dealer_cards)}</b> ({hand_value(dealer_cards)})")
             while hand_value(dealer_cards) < 17 or (hand_value(dealer_cards) == 17 and is_soft_hand(dealer_cards)):
@@ -487,7 +498,6 @@ class Bot(BaseBot):
                 + (" - <color=#FF0000><b>BUST!</b></color>" if dealer_bust else "")
             )
 
-            # Resolve
             cards = game["cards"]
             player_total = hand_value(cards)
             player_bust = player_total > 21
@@ -496,7 +506,7 @@ class Bot(BaseBot):
             if player_bust:
                 outcome = "lose"
             elif game.get("charlie"):
-                outcome = "charlie"  # 5+ cards without busting = automatic win, dealer's hand doesn't matter
+                outcome = "charlie"
             elif player_bj and dealer_bj:
                 outcome = "push"
             elif player_bj:
@@ -547,10 +557,9 @@ class Bot(BaseBot):
         self.bot_id = session_metadata.user_id
 
         if self.is_initialized:
-            # This is a reconnect, NOT the first connection. Do NOT re-teleport
-            # here - re-teleporting on every reconnect is what was causing the
-            # bot to visibly flicker/disappear-and-reappear mid-game. The bot
-            # is already in place; nothing to do.
+            # A reconnect within the SAME running process, not a fresh
+            # process start - the bot never actually left its spot, so
+            # re-teleporting here would just add a pointless extra jump.
             print("[RECONNECT] Session restarted - skipping re-teleport to avoid flicker.")
             return
         self.is_initialized = True
@@ -560,20 +569,28 @@ class Bot(BaseBot):
         asyncio.create_task(self.connection_watchdog_loop())
         asyncio.create_task(self.gist_sync_loop())
         asyncio.create_task(self.refund_stranded_gold())
+        asyncio.create_task(self.self_ping_loop())
         await self.announce(WELCOME_TEXT)
         asyncio.create_task(self.welcome_announce_loop())
 
     async def place_bot(self):
-        await asyncio.sleep(2.0)
         pos = self.get_bot_position()
         if pos == Position(0, 0, 0, "FrontRight"):
+            # No custom spot saved yet - nothing to restore, leave the bot
+            # wherever Highrise put it and let the owner run !gset once.
             return
-        for _ in range(5):
+        # Re-assert the saved position several times over the first ~6
+        # seconds after connecting. A single teleport call right after
+        # connect can get silently overwritten by Highrise's own spawn
+        # placement for a newly-joined bot; repeating it makes sure the
+        # saved spot actually sticks instead of the bot settling back at
+        # the crowd spawn point.
+        for delay in PLACEMENT_RETRY_DELAYS:
+            await asyncio.sleep(delay)
             try:
                 await self.highrise.teleport(self.bot_id, pos)
-                return
             except Exception:
-                await asyncio.sleep(2.0)
+                pass
 
     async def on_tip(self, sender: User, receiver: User, tip) -> None:
         if sender.id == self.bot_id or receiver.id != self.bot_id:
@@ -583,12 +600,10 @@ class Bot(BaseBot):
 
         game = self.active_games.get(sender.id)
 
-        # Double-down confirmation tip takes priority - only relevant while
-        # this specific player's own game is waiting on it.
         if game and game.get("pending_double"):
             pending = game["pending_double"]
             if time.time() > pending["deadline"]:
-                game["pending_double"] = None  # expired - falls through, tip just adds to their pending balance below
+                game["pending_double"] = None
             elif tip.amount == pending["amount"]:
                 game["pending_double"] = None
                 game["bet"] += tip.amount
@@ -620,9 +635,6 @@ class Bot(BaseBot):
                 game["pending_double"] = None
                 return
 
-        # Otherwise this tip just adds to the player's personal pending balance,
-        # regardless of whether they currently have a game running - it'll be
-        # ready to bet whenever they next type !bet.
         entry = self.pending_tips.get(sender.id, {"username": sender.username, "amount": 0})
         entry["username"] = sender.username
         entry["amount"] += tip.amount
@@ -664,9 +676,6 @@ class Bot(BaseBot):
 
         is_owner = user.username.lower() == self.owner_username.lower()
 
-        # !bet or !bet <amount> - starts a personal round from this player's pending tip balance.
-        # Plain !bet uses the whole balance; !bet 100g / !bet 1k bets just that much and
-        # leaves the rest sitting in their balance for a future !bet.
         bet_parts = clean_msg.split()
         if bet_parts and bet_parts[0] == "!bet":
             if user.id in self.active_games:
@@ -682,7 +691,6 @@ class Bot(BaseBot):
             refund = 0
 
             if arg is None:
-                # No amount given - bet the whole pending balance (original behavior).
                 bet_amount = entry["amount"]
                 if bet_amount > MAX_BET:
                     refund = bet_amount - MAX_BET
@@ -755,15 +763,14 @@ class Bot(BaseBot):
             asyncio.create_task(self.run_personal_round(user.id))
             return
 
-        # !hit/!h, !stand/!s, !double/!dd - only meaningful during THIS player's own turn.
         if clean_msg in ("!hit", "!h", "!stand", "!s", "!double", "!dd"):
             game = self.active_games.get(user.id)
             if not game or not game.get("awaiting_action"):
-                return  # not their turn, or no game running - silently ignored, no spam.
+                return
 
             if clean_msg in ("!double", "!dd"):
                 if game.get("pending_double"):
-                    return  # a confirmation is already pending
+                    return
                 if len(game["cards"]) != 2:
                     await self.respond(user, "⚠️ You can only double down on your first two cards.", "whisper")
                     return
@@ -787,10 +794,7 @@ class Bot(BaseBot):
                 await self.respond(user, f"✋ @{user.username} stands with {hand_value(game['cards'])}.", "chat")
                 return
 
-            # !hit / !h
             if not game["deck"]:
-                # Extremely unlikely (would need ~26 hits in one hand), but
-                # top up with a fresh shuffled deck rather than crashing.
                 game["deck"] = build_shuffled_deck()
             game["cards"].append(game["deck"].pop())
             total = hand_value(game["cards"])
@@ -875,6 +879,24 @@ class Bot(BaseBot):
 
 
 def run_web_server():
+    # This tiny HTTP server exists so hosting platforms (Render, Railway,
+    # etc.) can health-check the process. On FREE tiers, these platforms
+    # spin the service down after a period with no inbound HTTP requests -
+    # when that happens the bot disconnects and, on the next request,
+    # restarts from scratch (fresh process -> is_initialized=False again),
+    # which is what causes it to reappear at the room's default spawn
+    # before place_bot() teleports it back.
+    #
+    # To keep the bot up 24/7:
+    #   1. Point an external uptime monitor (UptimeRobot, cron-job.org,
+    #      Freshping, etc. - most have free tiers) at this service's public
+    #      URL, hitting it every 3-5 minutes. That's what actually prevents
+    #      the platform from ever spinning the process down.
+    #   2. Optionally set the SELF_URL environment variable to the same
+    #      public URL so the bot also pings itself (belt-and-suspenders -
+    #      does not replace step 1).
+    #   3. If your host offers an "always on" / paid instance tier, that
+    #      removes the idle-spindown behavior entirely.
     port = int(os.environ.get("PORT", 10000))
     server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
     server.serve_forever()
