@@ -2,17 +2,24 @@
 # Highrise Blackjack Gambling Bot (blackjack_bot.py)
 # Standalone bot - Blackjack rounds only. No emotes, VIP, DJ, or trivia.
 
-# Round flow:
-#   1. "New round in 3 min" announcement
-#   2. Rules are posted, then a 1-min reading pause before betting opens
+# Round flow (NOW PLAYER-TRIGGERED, not automatic):
+#   0. Bot sits idle. Anyone can type !bet to kick a round off.
+#   1. "New round in 1 min" announcement + rules posted immediately (public chat)
+#   2. 1-min wait, then betting opens
 #   3. 20s betting window (tip gold to bet) with 10s/5s warnings
 #   4. Betting closes - late tips are refunded, not counted
 #   5. 1s grace, then "rolling the cards..." + 2s delay
 #   6. Real per-player turns: each bettor is dealt 2 cards and can type
-#      !hit / !stand on their own turn (20s per turn, auto-stand on timeout)
+#      !hit/!h or !stand/!s on their own turn (15s per turn, auto-stand on timeout)
 #   7. Dealer reveals hole card and auto-plays (hits while under 17)
-#   8. Results + payouts announced, winners tipped
-#   9. Round data cleared, next round begins
+#   8. Results + payouts announced publicly, winners tipped
+#   9. Round data cleared, bot goes back to idle - type !bet to start another
+
+# While a round is in progress (from the moment !bet triggers it until it
+# fully resolves), anyone typing !bet gets a whisper telling them to wait.
+# Anyone can still join and bet via tip DURING the open betting window, even
+# if they didn't type !bet themselves. Tips sent after betting closes are
+# refunded with a whisper explaining the round is already underway.
 
 # Payouts: standard 2x on a win, 2.5x on a natural Blackjack, push returns
 # the exact bet, loss forfeits the bet. Real random cards are dealt every
@@ -73,7 +80,8 @@ DENOMINATION_VALUES = [
 WIN_MULTIPLIER = 2.0
 BLACKJACK_MULTIPLIER = 2.5
 BET_WINDOW_SECONDS = 20
-PLAYER_TURN_SECONDS = 20
+PLAYER_TURN_SECONDS = 15  # was 20 - shortened per new rules
+ROUND_STARTS_IN_SECONDS = 60  # "round starts in 1 min" wait before betting opens
 # The bot won't accept bets in a round whose worst-case total payout (all
 # bets paying out at the Blackjack rate) would exceed this fraction of its
 # current gold balance. This is a real safety cap, not a rigged deck.
@@ -86,15 +94,22 @@ RANK_VALUES = {
     "J": 10, "Q": 10, "K": 10, "A": 11,
 }
 
+WELCOME_TEXT = (
+    "🃏 <color=#FFD700><b>Welcome to the Blackjack Gaming Bot!</b></color> 🃏\n"
+    "Get closer to 21 than the dealer without going over, and win gold!\n"
+    "Type <b>!bet</b> anytime to kick off a new round. 🎲"
+)
+
 RULES_TEXT = (
     "🃏 <color=#FFD700><b>BLACKJACK RULES</b></color> 🃏\n"
     "💰 Tip ANY amount of gold to the bot during the betting window - that's your bet!\n"
-    "🂡 You'll get 2 cards. Type <b>!hit</b> to draw another, or <b>!stand</b> to hold.\n"
+    "🂡 You'll get 2 cards. Type <b>!hit</b> (or <b>!h</b>) to draw another, or <b>!stand</b> (or <b>!s</b>) to hold.\n"
     "🎯 Get as close to 21 as you can WITHOUT going over - go over 21 and you bust (lose instantly).\n"
     "👑 Beat the dealer's final hand to win <color=#FFD700><b>2x</b></color> your bet!\n"
     "🎉 A natural Blackjack (21 with your first 2 cards) pays <color=#FFD700><b>2.5x</b></color>!\n"
     "🤝 Tie the dealer = push, your bet is returned.\n"
-    "⏱️ You only have a short time on your turn - no response means you auto-stand!"
+    "⏱️ You only have 15 seconds on your turn - no response means you auto-stand!\n"
+    "🎲 Type <b>!bet</b> anytime to start a new round if one isn't already running!"
 )
 
 
@@ -159,7 +174,9 @@ class Bot(BaseBot):
         self.is_initialized = False
         self.last_command_time = {}
 
-        self.betting_open = False
+        # --- round state ---
+        self.round_active = False    # True from the moment !bet triggers a round until it fully resolves
+        self.betting_open = False    # True only during the 20s betting window inside a round
         self.current_bets = {}       # user_id -> {"username", "amount", "cards", "done", "busted"}
         self.active_turn_user_id = None
         self.wallet_cache_gold = 0
@@ -311,26 +328,29 @@ class Bot(BaseBot):
         except Exception:
             return None
 
-    async def blackjack_loop(self) -> None:
-        # Refund any bets that were stranded by a crash before this instance started.
+    async def refund_stranded_bets(self) -> None:
+        # Runs once at startup - refunds anyone whose bet was left stranded
+        # by a crash/redeploy mid-round before this instance came up.
         if getattr(self, "_stranded_bets", None):
             for uid, info in self._stranded_bets.items():
                 await self.queue_payout(uid, info.get("username", "player"), info.get("amount", 0), "bj_refund_recovery")
             self._stranded_bets = {}
 
-        while True:
-            await self.announce("🎰 A new <color=#FFD700><b>Blackjack</b></color> round starts in <b>3 min</b>! Get your gold ready! 🃏")
-            await asyncio.sleep(180)
-
+    async def run_round(self) -> None:
+        # Triggered by a player typing !bet. self.round_active is already
+        # True by the time this task starts (set by the command handler so
+        # two overlapping !bet calls can't both start a round).
+        try:
             self.current_bets = {}
-            self.betting_open = True
             fetched_gold = await self.get_wallet_gold()
             self.wallet_cache_gold = fetched_gold if fetched_gold is not None else 0
             self._save_state(pending_bets={})
 
+            await self.announce("🎰 A new <color=#FFD700><b>Blackjack</b></color> round starts in <b>1 minute</b>! Get your gold ready! 🃏")
             await self.announce(RULES_TEXT)
-            await asyncio.sleep(60)  # give players at least 1 min to read the rules before betting opens
+            await asyncio.sleep(ROUND_STARTS_IN_SECONDS)
 
+            self.betting_open = True
             await self.announce(
                 "💰 <color=#00FF00><b>BETTING IS OPEN for 20 seconds!</b></color> "
                 "Tip any gold amount to the bot right now to place your bet!"
@@ -358,8 +378,8 @@ class Bot(BaseBot):
             await asyncio.sleep(1)
 
             if not self.current_bets:
-                await self.announce("😴 Nobody placed a bet this round - skipping to the next one!")
-                continue
+                await self.announce("😴 Nobody placed a bet this round - type <b>!bet</b> whenever you're ready to start another!")
+                return
 
             await self.announce("🎴 Rolling the cards...")
             await asyncio.sleep(2)
@@ -388,7 +408,7 @@ class Bot(BaseBot):
                 self.active_turn_user_id = uid
                 await self.announce(
                     f"👉 @{username}'s turn! Your hand: <b>{format_hand(cards)}</b> ({hand_value(cards)}). "
-                    f"Dealer shows {format_card(dealer_up)}. Type <b>!hit</b> or <b>!stand</b>! (20s)"
+                    f"Dealer shows {format_card(dealer_up)}. Type <b>!hit</b>/<b>!h</b> or <b>!stand</b>/<b>!s</b>! (15s)"
                 )
                 turn_start = asyncio.get_running_loop().time()
                 while not info["done"]:
@@ -451,26 +471,40 @@ class Bot(BaseBot):
                     result_lines.append(f"💀 @{username} loses {bet}g. (hand {player_total})")
 
             await self.announce("\n".join(result_lines))
-            await self.announce("🏁 Round over! Next round starting soon...")
+            await self.announce("🏁 Round over! Type <b>!bet</b> to start the next one whenever you're ready!")
 
+        except Exception as e:
+            print(f"[ROUND ERROR] {e}")
+            await self.announce("⚠️ Something went wrong and this round had to be cancelled. Type !bet to try again!")
+        finally:
+            # Always leave the bot in a clean idle state, win/lose/crash/empty round alike.
             self.current_bets = {}
+            self.betting_open = False
+            self.active_turn_user_id = None
             self._save_state(pending_bets={})
+            self.round_active = False
 
     # --- Highrise event hooks ---
 
     async def on_start(self, session_metadata: SessionMetadata) -> None:
         print("Blackjack Bot Connected")
         self.bot_id = session_metadata.user_id
-        asyncio.create_task(self.place_bot())
 
         if self.is_initialized:
+            # This is a reconnect, NOT the first connection. Do NOT re-teleport
+            # here - re-teleporting on every reconnect is what was causing the
+            # bot to visibly flicker/disappear-and-reappear mid-game. The bot
+            # is already in place; nothing to do.
+            print("[RECONNECT] Session restarted - skipping re-teleport to avoid flicker.")
             return
         self.is_initialized = True
 
+        asyncio.create_task(self.place_bot())
         asyncio.create_task(self.process_tip_queue_worker())
         asyncio.create_task(self.connection_watchdog_loop())
         asyncio.create_task(self.gist_sync_loop())
-        asyncio.create_task(self.blackjack_loop())
+        asyncio.create_task(self.refund_stranded_bets())
+        asyncio.create_task(self.announce(WELCOME_TEXT))
 
     async def place_bot(self):
         await asyncio.sleep(2.0)
@@ -491,16 +525,29 @@ class Bot(BaseBot):
             return
 
         if not self.betting_open:
-            # Round is closed (or hasn't opened yet / rules are being read) - this
-            # isn't a bet, so treat it as a genuine gift tip to the bot and keep it.
-            try:
-                await self.highrise.send_whisper(
-                    sender.id,
-                    f"💖 Thanks so much for the {tip.amount}g tip! Betting isn't open right now, so this is just "
-                    "a gift to the bot - keep an eye on chat for when the next round's betting window opens!"
-                )
-            except Exception:
-                pass
+            if self.round_active:
+                # A round is running but betting has already closed (reading
+                # rules, dealing, turns, or dealer phase) - this tip can't be
+                # counted as a bet. Refund it and explain why.
+                await self.queue_payout(sender.id, sender.username, tip.amount, "bj_late_tip_refund")
+                try:
+                    await self.highrise.send_whisper(
+                        sender.id,
+                        f"⏳ The round is already ongoing and betting is closed, so your {tip.amount}g tip is "
+                        "being refunded. Wait for this round to finish, then type !bet to start the next one!"
+                    )
+                except Exception:
+                    pass
+            else:
+                # Truly idle - no round running at all, so treat this as a genuine gift.
+                try:
+                    await self.highrise.send_whisper(
+                        sender.id,
+                        f"💖 Thanks so much for the {tip.amount}g tip! There's no round running right now - "
+                        "type !bet if you'd like to kick one off!"
+                    )
+                except Exception:
+                    pass
             return
 
         existing = self.current_bets.get(sender.id)
@@ -561,18 +608,31 @@ class Bot(BaseBot):
 
         is_owner = user.username.lower() == self.owner_username.lower()
 
-        # !hit / !stand - ONLY the player whose turn it currently is gets heard.
-        if clean_msg in ("!hit", "!stand"):
+        # !bet - anyone can kick off a new round if one isn't already running.
+        if clean_msg == "!bet":
+            if self.round_active:
+                await self.respond(
+                    user,
+                    "⏳ A Blackjack round is already in progress! Wait for it to finish, then type !bet again to start the next one.",
+                    "whisper",
+                )
+                return
+            self.round_active = True
+            asyncio.create_task(self.run_round())
+            return
+
+        # !hit/!h and !stand/!s - ONLY the player whose turn it currently is gets heard.
+        if clean_msg in ("!hit", "!h", "!stand", "!s"):
             if user.id != self.active_turn_user_id:
                 return  # Not your turn - silently ignored, no spam.
             info = self.current_bets.get(user.id)
             if not info:
                 return
-            if clean_msg == "!stand":
+            if clean_msg in ("!stand", "!s"):
                 info["done"] = True
                 await self.respond(user, f"✋ @{user.username} stands with {hand_value(info['cards'])}.", "chat")
                 return
-            # !hit
+            # !hit / !h
             if not self.current_deck:
                 # Extremely unlikely (would need ~26 hits in one round), but
                 # top up with a fresh shuffled deck rather than crashing.
