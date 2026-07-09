@@ -328,6 +328,15 @@ class Bot(BaseBot):
         except Exception:
             return None
 
+    async def welcome_announce_loop(self) -> None:
+        # Repeats the welcome message every 60s, but only while idle -
+        # stays silent during an active round so it doesn't spam the
+        # round-flow announcements.
+        while True:
+            await asyncio.sleep(60)
+            if not self.round_active:
+                await self.announce(WELCOME_TEXT)
+
     async def refund_stranded_bets(self) -> None:
         # Runs once at startup - refunds anyone whose bet was left stranded
         # by a crash/redeploy mid-round before this instance came up.
@@ -504,7 +513,8 @@ class Bot(BaseBot):
         asyncio.create_task(self.connection_watchdog_loop())
         asyncio.create_task(self.gist_sync_loop())
         asyncio.create_task(self.refund_stranded_bets())
-        asyncio.create_task(self.announce(WELCOME_TEXT))
+        await self.announce(WELCOME_TEXT)
+        asyncio.create_task(self.welcome_announce_loop())
 
     async def place_bot(self):
         await asyncio.sleep(2.0)
