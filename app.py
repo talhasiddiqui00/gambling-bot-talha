@@ -2,33 +2,31 @@
 # Highrise Blackjack Gambling Bot (blackjack_bot.py)
 # Standalone bot - Blackjack rounds only. No emotes, VIP, DJ, or trivia.
 
-# Round flow (NOW PLAYER-TRIGGERED, not automatic):
-#   0. Bot sits idle. Anyone can type !bet to kick a round off.
-#   1. "New round in 1 min" announcement + rules posted immediately (public chat)
-#   2. 1-min wait, then betting opens
-#   3. 20s betting window (tip gold to bet) with 10s/5s warnings
-#   4. Betting closes - late tips are refunded, not counted
-#   5. 1s grace, then "rolling the cards..." + 2s delay
-#   6. Real per-player turns: each bettor is dealt 2 cards and can type
-#      !hit/!h or !stand/!s on their own turn (15s per turn, auto-stand on timeout)
-#   7. Dealer reveals hole card and auto-plays (hits while under 17)
-#   8. Results + payouts announced publicly, winners tipped
-#   9. Round data cleared, bot goes back to idle - type !bet to start another
+# EVERY PLAYER'S GAME RUNS INDEPENDENTLY. There is no shared "room round" -
+# each person tips gold at their own pace, and when they type !bet, a
+# personal Blackjack round starts just for them, running concurrently with
+# anyone else's game. Two, five, ten people can all be mid-hand at the same
+# time; each game only listens to its own player's commands.
 
-# While a round is in progress (from the moment !bet triggers it until it
-# fully resolves), anyone typing !bet gets a whisper telling them to wait.
-# Anyone can still join and bet via tip DURING the open betting window, even
-# if they didn't type !bet themselves. Tips sent after betting closes are
-# refunded with a whisper explaining the round is already underway.
+# Flow for an individual player:
+#   1. Tip the bot any amount of gold, any time - it's added to your personal
+#      pending balance (whispered confirmation of your running total).
+#   2. Type !bet - your whole pending balance becomes your bet (min 5g, max
+#      1000g; anything tipped over the max is refunded immediately).
+#   3. 20 seconds later, your own 2 cards + a dealer hand are dealt, announced
+#      publicly, and it's just your turn: !hit/!h or !stand/!s (15s per
+#      decision), or !double/!dd on a starting 9/10/11 (confirm by tipping a
+#      matching amount within 10s).
+#   4. Dealer auto-plays (hits on soft 17), your result + payout is announced.
+#   5. Your game clears - tip and !bet again whenever you like.
 
-# Payouts: 1.9x on a win, 2.0x on a natural Blackjack, push returns
-# the exact bet, loss forfeits the bet. Real random cards are dealt every
-# round - nothing is rigged. The dealer hits on a soft 17 (standard, disclosed
-# house rule) - a small, honest mathematical edge applied identically to
-# every player, not a targeted or hidden manipulation of any single game.
-# A house exposure cap limits how much total betting is accepted in a single
-# round relative to the bot's own gold balance, so one unlucky round can't
-# wipe it out - this is honest risk management, not manipulating outcomes.
+# Payouts: 1.9x on a win, 2.0x on a natural Blackjack, push returns the exact
+# bet, loss forfeits the bet. 5-Card Charlie (5 cards, no bust) auto-wins.
+# Real random cards are dealt every game - nothing is rigged. Before starting
+# any individual game, the bot checks that a worst-case payout on that bet
+# wouldn't exceed a safe fraction of its own gold balance, refunding the bet
+# and asking for a smaller one if it would - honest risk management, not
+# manipulating outcomes.
 # """
 
 import os
@@ -81,16 +79,18 @@ DENOMINATION_VALUES = [
 
 WIN_MULTIPLIER = 1.9  # disclosed house-edge tweak - a real win still profits, just slightly less than even money
 BLACKJACK_MULTIPLIER = 2.0  # disclosed house-edge tweak - still a small bonus over a plain win's 1.9x
-BET_WINDOW_SECONDS = 20
-PLAYER_TURN_SECONDS = 15  # was 20 - shortened per new rules
-ROUND_STARTS_IN_SECONDS = 30  # was 60 - "round starts in 30s" wait before betting opens
+PLAYER_TURN_SECONDS = 15
+PERSONAL_ROUND_DELAY_SECONDS = 20  # wait after !bet before that player's cards are dealt
 DOUBLE_CONFIRM_SECONDS = 10  # window to tip a matching bet to confirm a double-down
 DOUBLE_ELIGIBLE_TOTALS = (9, 10, 11)  # standard double-down rule: first two cards only
 CHARLIE_CARD_COUNT = 5  # 5-card Charlie: 5 cards without busting = automatic win
-# The bot won't accept bets in a round whose worst-case total payout (all
-# bets paying out at the Blackjack rate) would exceed this fraction of its
-# current gold balance. This is a real safety cap, not a rigged deck.
+MIN_BET = 5
+MAX_BET = 1000
+# The bot won't start an individual game if its worst-case payout on that bet
+# would exceed this fraction of the bot's current gold balance. This is a
+# real safety cap, not a rigged deck.
 MAX_EXPOSURE_FRACTION = 0.5
+WELCOME_INTERVAL_SECONDS = 60
 
 SUITS = ["♠", "♥", "♦", "♣"]
 RANKS = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"]
@@ -100,15 +100,18 @@ RANK_VALUES = {
 }
 
 WELCOME_TEXT = (
-    "🃏 <color=#FFD700><b>Welcome to the Blackjack Gaming Bot!</b></color> 🃏\n"
-    "Get closer to 21 than the dealer without going over, and win gold!\n"
-    "Type <b>!bet</b> anytime to kick off a new round. 🎲\n"
-    "📊 New: type <b>!stats</b> to see your personal win ratio, or <b>!leaderboard</b> to see the top players!"
+    "🃏 <color=#FFD700><b>Welcome to the Blackjack Game!</b></color> 🃏 Tip the bot any gold, then type <b>!bet</b> "
+    f"to start your OWN round (min {MIN_BET}g, max {MAX_BET}g) - runs just for you, even if others are playing too!\n"
+    "🂡 <b>!hit</b>/<b>!h</b> draw · ✋ <b>!stand</b>/<b>!s</b> hold · 💰 <b>!double</b>/<b>!dd</b> double a 9-11 · "
+    "📖 <b>!rules</b> full rules · 📊 <b>!stats</b> your win ratio · 🏆 <b>!leaderboard</b> top players"
 )
 
 RULES_TEXT = (
     "🃏 <color=#FFD700><b>BLACKJACK RULES</b></color> 🃏\n"
-    "💰 Tip ANY amount of gold to the bot during the betting window - that's your bet!\n"
+    f"💰 Tip ANY amount of gold to the bot, anytime - it's added to your personal balance. Type <b>!bet</b> to "
+    f"turn that balance into your bet (min {MIN_BET}g, max {MAX_BET}g - extra over the max is refunded).\n"
+    "🎮 Your game runs on its own, just for you - your cards are dealt 20 seconds after you !bet, even if other "
+    "people are mid-game at the same time.\n"
     "🂡 You'll get 2 cards. Type <b>!hit</b> (or <b>!h</b>) to draw another, or <b>!stand</b> (or <b>!s</b>) to hold.\n"
     "🎯 Get as close to 21 as you can WITHOUT going over - go over 21 and you bust (lose instantly).\n"
     "👑 Beat the dealer's final hand to win <color=#FFD700><b>1.9x</b></color> your bet!\n"
@@ -119,7 +122,6 @@ RULES_TEXT = (
     "a matching bet within 10s - you'll get exactly 1 more card and auto-stand, for double the payout!\n"
     "🃏 <b>5-Card Charlie:</b> draw 5 cards without busting and you win automatically, no matter what the dealer has!\n"
     "⏱️ You only have 15 seconds on your turn - no response means you auto-stand!\n"
-    "🎲 Type <b>!bet</b> anytime to start a new round if one isn't already running!\n"
     "📊 Type <b>!stats</b> for your personal win ratio, or <b>!leaderboard</b> to see the top players!"
 )
 
@@ -192,15 +194,11 @@ class Bot(BaseBot):
         self.is_initialized = False
         self.last_command_time = {}
 
-        # --- round state ---
-        self.round_active = False    # True from the moment !bet triggers a round until it fully resolves
-        self.betting_open = False    # True only during the 20s betting window inside a round
-        self.current_bets = {}       # user_id -> {"username", "amount", "cards", "done", "busted"}
-        self.player_stats = {}       # user_id -> {"username", "rounds", "wins", "blackjacks", "pushes", "losses"}
-        self.active_turn_user_id = None
-        self.wallet_cache_gold = 0
-        self.current_deck = []       # shared shuffled deck for the active round - !hit draws from this
-        self.pending_double = None   # {"uid", "amount", "deadline"} while waiting on a double-down confirm tip
+        # --- per-player independent game state ---
+        self.pending_tips = {}   # user_id -> {"username", "amount"} - gold tipped but not yet turned into a bet
+        self.active_games = {}   # user_id -> game state dict, present only while that player's round is running
+        self.player_stats = {}   # user_id -> {"username", "rounds", "wins", "blackjacks", "charlies", "pushes", "losses"}
+
         self.tip_queue = asyncio.Queue()
 
         self._gist_dirty = False
@@ -260,8 +258,9 @@ class Bot(BaseBot):
                 self._gist_dirty = True
 
     def _load_startup_state(self) -> None:
-        # Recover the bot's saved position, and refund anyone whose bet was
-        # left stranded by a crash/redeploy mid-round (fairness safety net).
+        # Recover the bot's saved position, and refund anyone whose gold was
+        # left stranded by a crash/redeploy - both untouched pending tips and
+        # bets already locked into a game that never got to resolve.
         data = None
         if self._gist_configured():
             data = self.fetch_gist_data()
@@ -273,11 +272,12 @@ class Bot(BaseBot):
                 data = None
         data = data or {}
         self._saved_bot_position = data.get("bot_position", {"x": 0, "y": 0, "z": 0, "facing": "FrontRight"})
-        self._stranded_bets = data.get("pending_bets", {}) or {}
         self.player_stats = data.get("player_stats", {}) or {}
-        self._save_state(pending_bets={})  # clear on disk immediately; we'll refund in on_start
+        self._stranded_tips = data.get("pending_tips", {}) or {}
+        self._stranded_bets = data.get("active_bets", {}) or {}
+        self._save_state()  # clears pending_tips/active_bets on disk immediately; refunded in on_start
 
-    def _save_state(self, pending_bets: dict = None) -> None:
+    def _save_state(self) -> None:
         try:
             data = {}
             if os.path.exists(DATA_FILE):
@@ -286,16 +286,22 @@ class Bot(BaseBot):
                         data = load(f)
                 except Exception:
                     data = {}
-            if pending_bets is not None:
-                data["pending_bets"] = pending_bets
-            data.setdefault("bot_position", getattr(self, "_saved_bot_position", {"x": 0, "y": 0, "z": 0, "facing": "FrontRight"}))
+            data["pending_tips"] = self.pending_tips
+            data["active_bets"] = {
+                uid: {"username": g["username"], "bet": g["bet"]} for uid, g in self.active_games.items()
+            }
             data["player_stats"] = self.player_stats
+            data.setdefault("bot_position", getattr(self, "_saved_bot_position", {"x": 0, "y": 0, "z": 0, "facing": "FrontRight"}))
             with open(DATA_FILE, "w") as f:
                 dump(data, f, indent=4)
             if self._gist_configured():
                 self.queue_gist_push(data)
         except Exception as e:
             print(f"[STATE ERROR] Save failed: {e}")
+
+    def get_bot_position(self) -> Position:
+        pos = getattr(self, "_saved_bot_position", {"x": 0, "y": 0, "z": 0, "facing": "FrontRight"})
+        return Position(pos["x"], pos["y"], pos["z"], pos["facing"])
 
     def record_result(self, uid: str, username: str, outcome: str) -> None:
         # outcome is one of: "win", "blackjack", "charlie", "push", "lose"
@@ -325,10 +331,6 @@ class Bot(BaseBot):
         if rounds == 0:
             return 0.0
         return round((stats.get("wins", 0) / rounds) * 100, 1)
-
-    def get_bot_position(self) -> Position:
-        pos = getattr(self, "_saved_bot_position", {"x": 0, "y": 0, "z": 0, "facing": "FrontRight"})
-        return Position(pos["x"], pos["y"], pos["z"], pos["facing"])
 
     # --- tip payout queue (silent - round summary announces results, not each bar) ---
 
@@ -362,7 +364,15 @@ class Bot(BaseBot):
                         print("[WATCHDOG] Connection appears dead - restarting process.")
                         os._exit(1)
 
-    # --- main game loop ---
+    async def welcome_announce_loop(self) -> None:
+        # Repeats the welcome/commands message publicly every minute. Personal
+        # games run independently of this, so it's safe to post regardless of
+        # how many rounds are currently in progress.
+        while True:
+            await asyncio.sleep(WELCOME_INTERVAL_SECONDS)
+            await self.announce(WELCOME_TEXT)
+
+    # --- shared helpers ---
 
     async def announce(self, msg: str) -> None:
         try:
@@ -379,121 +389,68 @@ class Bot(BaseBot):
         except Exception:
             return None
 
-    async def welcome_announce_loop(self) -> None:
-        # Repeats the welcome message every 60s, but only while idle -
-        # stays silent during an active round so it doesn't spam the
-        # round-flow announcements.
-        while True:
-            await asyncio.sleep(60)
-            if not self.round_active:
-                await self.announce(WELCOME_TEXT)
+    async def refund_stranded_gold(self) -> None:
+        # Runs once at startup - refunds any pending tip balances and any bets
+        # already locked into a game when the previous instance went down.
+        for uid, info in getattr(self, "_stranded_tips", {}).items():
+            await self.queue_payout(uid, info.get("username", "player"), info.get("amount", 0), "bj_stranded_tip_refund")
+        for uid, info in getattr(self, "_stranded_bets", {}).items():
+            await self.queue_payout(uid, info.get("username", "player"), info.get("bet", 0), "bj_stranded_bet_refund")
+        self._stranded_tips = {}
+        self._stranded_bets = {}
 
-    async def refund_stranded_bets(self) -> None:
-        # Runs once at startup - refunds anyone whose bet was left stranded
-        # by a crash/redeploy mid-round before this instance came up.
-        if getattr(self, "_stranded_bets", None):
-            for uid, info in self._stranded_bets.items():
-                await self.queue_payout(uid, info.get("username", "player"), info.get("amount", 0), "bj_refund_recovery")
-            self._stranded_bets = {}
+    # --- personal per-player round ---
 
-    async def run_round(self) -> None:
-        # Triggered by a player typing !bet. self.round_active is already
-        # True by the time this task starts (set by the command handler so
-        # two overlapping !bet calls can't both start a round).
+    async def run_personal_round(self, uid: str) -> None:
+        game = self.active_games.get(uid)
+        if not game:
+            return
+        username = game["username"]
+        bet = game["bet"]
         try:
-            self.current_bets = {}
-            self.pending_double = None
-            fetched_gold = await self.get_wallet_gold()
-            self.wallet_cache_gold = fetched_gold if fetched_gold is not None else 0
-            self._save_state(pending_bets={})
-
-            await self.announce("🎰 A new <color=#FFD700><b>Blackjack</b></color> round starts in <b>30 seconds</b>! Get your gold ready! 🃏")
-            await self.announce(RULES_TEXT)
-            await asyncio.sleep(ROUND_STARTS_IN_SECONDS)
-
-            self.betting_open = True
-            await self.announce(
-                "💰 <color=#00FF00><b>BETTING IS OPEN for 20 seconds!</b></color> "
-                "Tip any gold amount to the bot right now to place your bet!"
-            )
-
-            start = asyncio.get_running_loop().time()
-            warned = set()
-            while True:
-                left = BET_WINDOW_SECONDS - (asyncio.get_running_loop().time() - start)
-                if left <= 0:
-                    break
-                if left <= 10 and 10 not in warned:
-                    warned.add(10)
-                    await self.announce("⏳ <b>10 seconds</b> left to place your bet!")
-                if left <= 5 and 5 not in warned:
-                    warned.add(5)
-                    await self.announce("⏳ <b>5 seconds</b> left - last chance to bet!")
-                await asyncio.sleep(min(1, max(0.1, left)))
-
-            self.betting_open = False
-            await self.announce(
-                "⛔ <color=#FF0000><b>BETTING IS CLOSED!</b></color> Any tips from now on will NOT count "
-                "for this round - they'll be refunded, so hang on to your gold for the next one!"
-            )
-            await asyncio.sleep(1)
-
-            if not self.current_bets:
-                await self.announce("😴 Nobody placed a bet this round - type <b>!bet</b> whenever you're ready to start another!")
-                return
-
-            await self.announce("🎴 Rolling the cards...")
-            await asyncio.sleep(2)
+            await asyncio.sleep(PERSONAL_ROUND_DELAY_SECONDS)
 
             deck = build_shuffled_deck()
-            self.current_deck = deck
-            dealer_cards = [deck.pop(), deck.pop()]
-            for info in self.current_bets.values():
-                info["cards"] = [deck.pop(), deck.pop()]
-                info["done"] = False
-                info["busted"] = False
+            game["deck"] = deck
+            game["cards"] = [deck.pop(), deck.pop()]
+            game["dealer_cards"] = [deck.pop(), deck.pop()]
+            dealer_up = game["dealer_cards"][0]
 
-            dealer_up = dealer_cards[0]
-            await self.announce(f"🂠 Dealer shows: <b>{format_card(dealer_up)}</b> and a hidden card.")
+            await self.announce(
+                f"🎴 @{username}'s Blackjack round is live! Bet: <b>{bet}g</b>. Hand: <b>{format_hand(game['cards'])}</b> "
+                f"({hand_value(game['cards'])}). Dealer shows <b>{format_card(dealer_up)}</b> and a hidden card."
+            )
 
-            # Sequential per-player turns
-            for uid, info in list(self.current_bets.items()):
-                username = info["username"]
-                cards = info["cards"]
-
-                if is_blackjack(cards):
-                    await self.announce(f"🎉 @{username} has a natural <color=#FFD700><b>BLACKJACK</b></color>! {format_hand(cards)} (21)! Auto-standing.")
-                    info["done"] = True
-                    continue
-
-                self.active_turn_user_id = uid
+            if is_blackjack(game["cards"]):
+                await self.announce(f"🎉 @{username} has a natural <color=#FFD700><b>BLACKJACK</b></color>! Auto-standing.")
+                game["done"] = True
+            else:
                 double_hint = (
                     " You can also type <b>!double</b>/<b>!dd</b> to double your bet for one extra card!"
-                    if hand_value(cards) in DOUBLE_ELIGIBLE_TOTALS else ""
+                    if hand_value(game["cards"]) in DOUBLE_ELIGIBLE_TOTALS else ""
                 )
                 await self.announce(
-                    f"👉 @{username}'s turn! Your hand: <b>{format_hand(cards)}</b> ({hand_value(cards)}). "
-                    f"Dealer shows {format_card(dealer_up)}. Type <b>!hit</b>/<b>!h</b> or <b>!stand</b>/<b>!s</b>!{double_hint} (15s)"
+                    f"👉 @{username}, it's your turn! Type <b>!hit</b>/<b>!h</b> or <b>!stand</b>/<b>!s</b>!{double_hint} (15s)"
                 )
+                game["awaiting_action"] = True
                 turn_start = asyncio.get_running_loop().time()
-                while not info["done"]:
-                    if self.pending_double and self.pending_double["uid"] == uid:
-                        # Paused waiting on the double-down confirmation tip - doesn't
-                        # count against the normal turn clock.
-                        if time.time() > self.pending_double["deadline"]:
-                            self.pending_double = None
+                while not game["done"]:
+                    if game.get("pending_double"):
+                        if time.time() > game["pending_double"]["deadline"]:
+                            game["pending_double"] = None
                             await self.announce(f"⌛ @{username} didn't confirm the double in time - go ahead with !hit or !stand.")
                             turn_start = asyncio.get_running_loop().time()
                         await asyncio.sleep(1)
                         continue
                     if asyncio.get_running_loop().time() - turn_start > PLAYER_TURN_SECONDS:
-                        info["done"] = True
-                        await self.announce(f"⌛ @{username} ran out of time - auto-standing with {hand_value(cards)}.")
+                        game["done"] = True
+                        await self.announce(f"⌛ @{username} ran out of time - auto-standing with {hand_value(game['cards'])}.")
                         break
                     await asyncio.sleep(1)
-                self.active_turn_user_id = None
+                game["awaiting_action"] = False
 
             # Dealer's turn
+            dealer_cards = game["dealer_cards"]
             await self.announce(f"🂠 Dealer reveals: <b>{format_hand(dealer_cards)}</b> ({hand_value(dealer_cards)})")
             while hand_value(dealer_cards) < 17 or (hand_value(dealer_cards) == 17 and is_soft_hand(dealer_cards)):
                 dealer_cards.append(deck.pop())
@@ -505,70 +462,58 @@ class Bot(BaseBot):
                 + (" - <color=#FF0000><b>BUST!</b></color>" if dealer_bust else "")
             )
 
-            # Resolve each bet
-            result_lines = []
-            for uid, info in self.current_bets.items():
-                username = info["username"]
-                bet = info["amount"]
-                cards = info["cards"]
-                player_total = hand_value(cards)
-                player_bust = player_total > 21
-                player_bj = is_blackjack(cards)
+            # Resolve
+            cards = game["cards"]
+            player_total = hand_value(cards)
+            player_bust = player_total > 21
+            player_bj = is_blackjack(cards)
 
-                if player_bust:
-                    outcome = "lose"
-                elif info.get("charlie"):
-                    outcome = "charlie"  # 5+ cards without busting = automatic win, dealer's hand doesn't matter
-                elif player_bj and dealer_bj:
-                    outcome = "push"
-                elif player_bj:
-                    outcome = "blackjack"
-                elif dealer_bust:
-                    outcome = "win"
-                elif player_total > dealer_total:
-                    outcome = "win"
-                elif player_total == dealer_total:
-                    outcome = "push"
-                else:
-                    outcome = "lose"
+            if player_bust:
+                outcome = "lose"
+            elif game.get("charlie"):
+                outcome = "charlie"  # 5+ cards without busting = automatic win, dealer's hand doesn't matter
+            elif player_bj and dealer_bj:
+                outcome = "push"
+            elif player_bj:
+                outcome = "blackjack"
+            elif dealer_bust:
+                outcome = "win"
+            elif player_total > dealer_total:
+                outcome = "win"
+            elif player_total == dealer_total:
+                outcome = "push"
+            else:
+                outcome = "lose"
 
-                double_tag = " (doubled!)" if info.get("doubled") else ""
+            double_tag = " (doubled!)" if game.get("doubled") else ""
 
-                if outcome == "win":
-                    payout = math.floor(bet * WIN_MULTIPLIER)
-                    await self.queue_payout(uid, username, payout, "bj_win")
-                    result_lines.append(f"🎉 @{username} WINS <color=#FFD700><b>{payout}g</b></color>!{double_tag} (bet {bet}g, hand {player_total})")
-                elif outcome == "blackjack":
-                    payout = math.floor(bet * BLACKJACK_MULTIPLIER)
-                    await self.queue_payout(uid, username, payout, "bj_blackjack")
-                    result_lines.append(f"🃏 @{username} BLACKJACK! Wins <color=#FFD700><b>{payout}g</b></color>! (bet {bet}g)")
-                elif outcome == "charlie":
-                    payout = math.floor(bet * WIN_MULTIPLIER)
-                    await self.queue_payout(uid, username, payout, "bj_charlie")
-                    result_lines.append(f"🃏 @{username} hit a <color=#FFD700><b>5-CARD CHARLIE</b></color>! Automatic win of <b>{payout}g</b>!{double_tag} (bet {bet}g)")
-                elif outcome == "push":
-                    await self.queue_payout(uid, username, bet, "bj_push")
-                    result_lines.append(f"🤝 @{username} PUSH - {bet}g bet refunded. (hand {player_total})")
-                else:
-                    result_lines.append(f"💀 @{username} loses {bet}g.{double_tag} (hand {player_total})")
+            if outcome == "win":
+                payout = math.floor(bet * WIN_MULTIPLIER)
+                await self.queue_payout(uid, username, payout, "bj_win")
+                await self.announce(f"🎉 @{username} WINS <color=#FFD700><b>{payout}g</b></color>!{double_tag} (bet {bet}g, hand {player_total})")
+            elif outcome == "blackjack":
+                payout = math.floor(bet * BLACKJACK_MULTIPLIER)
+                await self.queue_payout(uid, username, payout, "bj_blackjack")
+                await self.announce(f"🃏 @{username} BLACKJACK! Wins <color=#FFD700><b>{payout}g</b></color>! (bet {bet}g)")
+            elif outcome == "charlie":
+                payout = math.floor(bet * WIN_MULTIPLIER)
+                await self.queue_payout(uid, username, payout, "bj_charlie")
+                await self.announce(f"🃏 @{username} hit a <color=#FFD700><b>5-CARD CHARLIE</b></color>! Automatic win of <b>{payout}g</b>!{double_tag} (bet {bet}g)")
+            elif outcome == "push":
+                await self.queue_payout(uid, username, bet, "bj_push")
+                await self.announce(f"🤝 @{username} PUSH - {bet}g bet refunded. (hand {player_total})")
+            else:
+                await self.announce(f"💀 @{username} loses {bet}g.{double_tag} (hand {player_total})")
 
-                self.record_result(uid, username, outcome)
-
-            self._save_state()
-            await self.announce("\n".join(result_lines))
-            await self.announce("🏁 Round over! Type <b>!bet</b> to start the next one whenever you're ready! (Check !stats or !leaderboard)")
+            self.record_result(uid, username, outcome)
 
         except Exception as e:
-            print(f"[ROUND ERROR] {e}")
-            await self.announce("⚠️ Something went wrong and this round had to be cancelled. Type !bet to try again!")
+            print(f"[ROUND ERROR] @{username}: {e}")
+            await self.announce(f"⚠️ @{username}'s round hit an error and had to be cancelled. Your {bet}g bet has been refunded.")
+            await self.queue_payout(uid, username, bet, "bj_round_error_refund")
         finally:
-            # Always leave the bot in a clean idle state, win/lose/crash/empty round alike.
-            self.current_bets = {}
-            self.betting_open = False
-            self.active_turn_user_id = None
-            self.pending_double = None
-            self._save_state(pending_bets={})
-            self.round_active = False
+            self.active_games.pop(uid, None)
+            self._save_state()
 
     # --- Highrise event hooks ---
 
@@ -589,7 +534,7 @@ class Bot(BaseBot):
         asyncio.create_task(self.process_tip_queue_worker())
         asyncio.create_task(self.connection_watchdog_loop())
         asyncio.create_task(self.gist_sync_loop())
-        asyncio.create_task(self.refund_stranded_bets())
+        asyncio.create_task(self.refund_stranded_gold())
         await self.announce(WELCOME_TEXT)
         asyncio.create_task(self.welcome_announce_loop())
 
@@ -611,99 +556,59 @@ class Bot(BaseBot):
         if not isinstance(tip, CurrencyItem):
             return
 
-        # Double-down confirmation tip takes priority over the normal betting
-        # logic below, since it happens during the turn phase (betting_open
-        # is already False by then).
-        if self.pending_double and self.pending_double["uid"] == sender.id:
-            if time.time() > self.pending_double["deadline"]:
-                self.pending_double = None  # expired - fall through to normal handling below
-            elif tip.amount == self.pending_double["amount"]:
-                info = self.current_bets.get(sender.id)
-                self.pending_double = None
-                if info:
-                    info["amount"] += tip.amount
-                    info["doubled"] = True
-                    if not self.current_deck:
-                        self.current_deck = build_shuffled_deck()
-                    info["cards"].append(self.current_deck.pop())
-                    total = hand_value(info["cards"])
-                    if total > 21:
-                        info["busted"] = True
-                    await self.announce(
-                        f"💰 @{sender.username} DOUBLES DOWN! New bet: <b>{info['amount']}g</b>. "
-                        f"Draws {format_card(info['cards'][-1])} - hand: {format_hand(info['cards'])} ({total})"
-                        + (" - <color=#FF0000><b>BUST!</b></color>" if total > 21 else " - standing.")
-                    )
-                    info["done"] = True
+        game = self.active_games.get(sender.id)
+
+        # Double-down confirmation tip takes priority - only relevant while
+        # this specific player's own game is waiting on it.
+        if game and game.get("pending_double"):
+            pending = game["pending_double"]
+            if time.time() > pending["deadline"]:
+                game["pending_double"] = None  # expired - falls through, tip just adds to their pending balance below
+            elif tip.amount == pending["amount"]:
+                game["pending_double"] = None
+                game["bet"] += tip.amount
+                game["doubled"] = True
+                if not game["deck"]:
+                    game["deck"] = build_shuffled_deck()
+                game["cards"].append(game["deck"].pop())
+                total = hand_value(game["cards"])
+                if total > 21:
+                    game["busted"] = True
+                await self.announce(
+                    f"💰 @{sender.username} DOUBLES DOWN! New bet: <b>{game['bet']}g</b>. "
+                    f"Draws {format_card(game['cards'][-1])} - hand: {format_hand(game['cards'])} ({total})"
+                    + (" - <color=#FF0000><b>BUST!</b></color>" if total > 21 else " - standing.")
+                )
+                game["done"] = True
+                self._save_state()
                 return
             else:
-                # Wrong amount - refund it and cancel the double offer so the turn continues normally.
                 await self.queue_payout(sender.id, sender.username, tip.amount, "bj_double_mismatch_refund")
                 try:
                     await self.highrise.send_whisper(
                         sender.id,
-                        f"⚠️ That didn't match the {self.pending_double['amount']}g needed to double down, so it's "
-                        "been refunded. Double down offer cancelled - just !hit or !stand instead."
+                        f"⚠️ That didn't match the {pending['amount']}g needed to double down, so it's been refunded. "
+                        "Double down offer cancelled - just !hit or !stand instead."
                     )
                 except Exception:
                     pass
-                self.pending_double = None
+                game["pending_double"] = None
                 return
 
-        if not self.betting_open:
-            if self.round_active:
-                # A round is running but betting has already closed (reading
-                # rules, dealing, turns, or dealer phase) - this tip can't be
-                # counted as a bet. Refund it and explain why.
-                await self.queue_payout(sender.id, sender.username, tip.amount, "bj_late_tip_refund")
-                try:
-                    await self.highrise.send_whisper(
-                        sender.id,
-                        f"⏳ The round is already ongoing and betting is closed, so your {tip.amount}g tip is "
-                        "being refunded. Wait for this round to finish, then type !bet to start the next one!"
-                    )
-                except Exception:
-                    pass
-            else:
-                # Truly idle - no round running at all, so treat this as a genuine gift.
-                try:
-                    await self.highrise.send_whisper(
-                        sender.id,
-                        f"💖 Thanks so much for the {tip.amount}g tip! There's no round running right now - "
-                        "type !bet if you'd like to kick one off!"
-                    )
-                except Exception:
-                    pass
-            return
-
-        existing = self.current_bets.get(sender.id)
-        current_total_bets = sum(b["amount"] for b in self.current_bets.values())
-        worst_case_if_added = (current_total_bets + tip.amount) * BLACKJACK_MULTIPLIER
-        cap = self.wallet_cache_gold * MAX_EXPOSURE_FRACTION
-
-        if worst_case_if_added > cap:
-            await self.queue_payout(sender.id, sender.username, tip.amount, "bj_cap_refund")
-            try:
-                await self.highrise.send_whisper(
-                    sender.id,
-                    f"⚠️ The house's betting limit is reached for this round - your {tip.amount}g tip is being "
-                    "refunded. Try a smaller bet or catch the next round!"
-                )
-            except Exception:
-                pass
-            return
-
-        if existing:
-            existing["amount"] += tip.amount
-            new_total = existing["amount"]
-        else:
-            self.current_bets[sender.id] = {"username": sender.username, "amount": tip.amount, "cards": [], "done": False, "busted": False}
-            new_total = tip.amount
-
-        self._save_state(pending_bets={uid: {"username": b["username"], "amount": b["amount"]} for uid, b in self.current_bets.items()})
-
+        # Otherwise this tip just adds to the player's personal pending balance,
+        # regardless of whether they currently have a game running - it'll be
+        # ready to bet whenever they next type !bet.
+        entry = self.pending_tips.get(sender.id, {"username": sender.username, "amount": 0})
+        entry["username"] = sender.username
+        entry["amount"] += tip.amount
+        self.pending_tips[sender.id] = entry
+        self._save_state()
         try:
-            await self.highrise.send_whisper(sender.id, f"✅ You now have <b>{new_total}g</b> bet on this round's Blackjack! Good luck! 🍀")
+            await self.highrise.send_whisper(
+                sender.id,
+                f"✅ You now have <b>{entry['amount']}g</b> ready to bet! Type !bet to start your round "
+                f"(min {MIN_BET}g, max {MAX_BET}g)."
+            )
         except Exception:
             pass
 
@@ -734,34 +639,71 @@ class Bot(BaseBot):
 
         is_owner = user.username.lower() == self.owner_username.lower()
 
-        # !bet - anyone can kick off a new round if one isn't already running.
+        # !bet - starts a personal round from this player's pending tip balance.
         if clean_msg == "!bet":
-            if self.round_active:
+            if user.id in self.active_games:
+                await self.respond(user, "⏳ You already have a Blackjack round in progress! Finish it before starting another.", "whisper")
+                return
+            entry = self.pending_tips.get(user.id)
+            if not entry or entry["amount"] < MIN_BET:
+                await self.respond(user, f"💰 Tip the bot at least {MIN_BET}g first, then type !bet to start your round!", "whisper")
+                return
+
+            username = entry["username"]
+            bet_amount = entry["amount"]
+            refund = 0
+            if bet_amount > MAX_BET:
+                refund = bet_amount - MAX_BET
+                bet_amount = MAX_BET
+            self.pending_tips.pop(user.id, None)
+
+            fetched_gold = await self.get_wallet_gold()
+            wallet_gold = fetched_gold if fetched_gold is not None else 0
+            worst_case = bet_amount * BLACKJACK_MULTIPLIER
+            if worst_case > wallet_gold * MAX_EXPOSURE_FRACTION:
+                await self.queue_payout(user.id, username, bet_amount + refund, "bj_house_cap_refund")
+                self._save_state()
                 await self.respond(
                     user,
-                    "⏳ A Blackjack round is already in progress! Wait for it to finish, then type !bet again to start the next one.",
+                    "⚠️ Sorry, the house can't safely cover a bet that size right now - your gold has been refunded. Try a smaller bet!",
                     "whisper",
                 )
                 return
-            self.round_active = True
-            asyncio.create_task(self.run_round())
+
+            if refund > 0:
+                await self.queue_payout(user.id, username, refund, "bj_over_max_refund")
+                await self.respond(
+                    user,
+                    f"⚠️ Max bet is {MAX_BET}g, so the extra {refund}g has been refunded. Starting your round with {bet_amount}g!",
+                    "whisper",
+                )
+
+            self.active_games[user.id] = {
+                "username": username, "bet": bet_amount, "cards": [], "dealer_cards": [], "deck": [],
+                "done": False, "awaiting_action": False, "doubled": False, "charlie": False,
+                "busted": False, "pending_double": None,
+            }
+            self._save_state()
+            await self.announce(
+                f"🎰 @{username} placed a <b>{bet_amount}g</b> Blackjack bet! Cards will be dealt in "
+                f"{PERSONAL_ROUND_DELAY_SECONDS} seconds..."
+            )
+            asyncio.create_task(self.run_personal_round(user.id))
             return
 
-        # !hit/!h, !stand/!s, !double/!dd - ONLY the player whose turn it currently is gets heard.
+        # !hit/!h, !stand/!s, !double/!dd - only meaningful during THIS player's own turn.
         if clean_msg in ("!hit", "!h", "!stand", "!s", "!double", "!dd"):
-            if user.id != self.active_turn_user_id:
-                return  # Not your turn - silently ignored, no spam.
-            info = self.current_bets.get(user.id)
-            if not info:
-                return
+            game = self.active_games.get(user.id)
+            if not game or not game.get("awaiting_action"):
+                return  # not their turn, or no game running - silently ignored, no spam.
 
             if clean_msg in ("!double", "!dd"):
-                if self.pending_double:
-                    return  # a confirmation is already pending for this player
-                if len(info["cards"]) != 2:
+                if game.get("pending_double"):
+                    return  # a confirmation is already pending
+                if len(game["cards"]) != 2:
                     await self.respond(user, "⚠️ You can only double down on your first two cards.", "whisper")
                     return
-                total = hand_value(info["cards"])
+                total = hand_value(game["cards"])
                 if total not in DOUBLE_ELIGIBLE_TOTALS:
                     await self.respond(
                         user,
@@ -769,39 +711,40 @@ class Bot(BaseBot):
                         "whisper",
                     )
                     return
-                self.pending_double = {"uid": user.id, "amount": info["amount"], "deadline": time.time() + DOUBLE_CONFIRM_SECONDS}
+                game["pending_double"] = {"amount": game["bet"], "deadline": time.time() + DOUBLE_CONFIRM_SECONDS}
                 await self.announce(
-                    f"💰 @{user.username} wants to DOUBLE DOWN! Tip <b>{info['amount']}g</b> within "
+                    f"💰 @{user.username} wants to DOUBLE DOWN! Tip <b>{game['bet']}g</b> within "
                     f"{DOUBLE_CONFIRM_SECONDS}s to confirm (must match your original bet exactly)."
                 )
                 return
 
             if clean_msg in ("!stand", "!s"):
-                info["done"] = True
-                await self.respond(user, f"✋ @{user.username} stands with {hand_value(info['cards'])}.", "chat")
+                game["done"] = True
+                await self.respond(user, f"✋ @{user.username} stands with {hand_value(game['cards'])}.", "chat")
                 return
+
             # !hit / !h
-            if not self.current_deck:
-                # Extremely unlikely (would need ~26 hits in one round), but
+            if not game["deck"]:
+                # Extremely unlikely (would need ~26 hits in one hand), but
                 # top up with a fresh shuffled deck rather than crashing.
-                self.current_deck = build_shuffled_deck()
-            info["cards"].append(self.current_deck.pop())
-            total = hand_value(info["cards"])
+                game["deck"] = build_shuffled_deck()
+            game["cards"].append(game["deck"].pop())
+            total = hand_value(game["cards"])
             if total > 21:
-                info["busted"] = True
-                info["done"] = True
-                await self.respond(user, f"💥 @{user.username} draws {format_card(info['cards'][-1])} - hand: {format_hand(info['cards'])} ({total}) - BUST!", "chat")
-            elif len(info["cards"]) >= CHARLIE_CARD_COUNT:
-                info["charlie"] = True
-                info["done"] = True
+                game["busted"] = True
+                game["done"] = True
+                await self.respond(user, f"💥 @{user.username} draws {format_card(game['cards'][-1])} - hand: {format_hand(game['cards'])} ({total}) - BUST!", "chat")
+            elif len(game["cards"]) >= CHARLIE_CARD_COUNT:
+                game["charlie"] = True
+                game["done"] = True
                 await self.respond(
                     user,
-                    f"🃏 @{user.username} draws {format_card(info['cards'][-1])} - hand: {format_hand(info['cards'])} ({total}) - "
+                    f"🃏 @{user.username} draws {format_card(game['cards'][-1])} - hand: {format_hand(game['cards'])} ({total}) - "
                     f"<b>5-CARD CHARLIE!</b> Automatic win!",
                     "chat",
                 )
             else:
-                await self.respond(user, f"🂠 @{user.username} draws {format_card(info['cards'][-1])} - hand: {format_hand(info['cards'])} ({total}). Hit or stand?", "chat")
+                await self.respond(user, f"🂠 @{user.username} draws {format_card(game['cards'][-1])} - hand: {format_hand(game['cards'])} ({total}). Hit or stand?", "chat")
             return
 
         if clean_msg == "!rules":
@@ -811,15 +754,15 @@ class Bot(BaseBot):
         if clean_msg in ("!stats", "!wr", "!winrate"):
             stats = self.player_stats.get(user.id)
             if not stats or stats.get("rounds", 0) == 0:
-                await self.respond(user, "📊 You haven't played a round yet - type !bet to get started!", "whisper")
+                await self.respond(user, "📊 You haven't played a round yet - tip the bot and type !bet to get started!", "whisper")
                 return
             ratio = self.win_ratio_pct(stats)
             await self.respond(
                 user,
                 (
                     f"📊 <b>Your Blackjack stats</b>\n"
-                    f"Rounds played: {stats['rounds']} | Wins: {stats['wins']} (incl. {stats['blackjacks']} Blackjacks) "
-                    f"| Pushes: {stats['pushes']} | Losses: {stats['losses']}\n"
+                    f"Rounds played: {stats['rounds']} | Wins: {stats['wins']} (incl. {stats['blackjacks']} Blackjacks, "
+                    f"{stats.get('charlies', 0)} Charlies) | Pushes: {stats['pushes']} | Losses: {stats['losses']}\n"
                     f"🏆 Win ratio: <b>{ratio}%</b>"
                 ),
                 "whisper",
