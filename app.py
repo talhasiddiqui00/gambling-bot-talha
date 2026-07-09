@@ -101,15 +101,17 @@ RANK_VALUES = {
 
 WELCOME_TEXT = (
     "🃏 <color=#FFD700><b>Welcome to the Blackjack Game!</b></color> 🃏 Tip the bot any gold, then type <b>!bet</b> "
-    f"to start your OWN round (min {MIN_BET}g, max {MAX_BET}g) - runs just for you, even if others are playing too!\n"
+    f"(whole balance) or <b>!bet 100g</b> / <b>!bet 1k</b> (a specific amount) to start your OWN round "
+    f"(min {MIN_BET}g, max {MAX_BET}g) - runs just for you, even if others are playing too!\n"
     "🂡 <b>!hit</b>/<b>!h</b> draw · ✋ <b>!stand</b>/<b>!s</b> hold · 💰 <b>!double</b>/<b>!dd</b> double a 9-11 · "
     "📖 <b>!rules</b> full rules · 📊 <b>!stats</b> your win ratio · 🏆 <b>!leaderboard</b> top players"
 )
 
 RULES_TEXT = (
     "🃏 <color=#FFD700><b>BLACKJACK RULES</b></color> 🃏\n"
-    f"💰 Tip ANY amount of gold to the bot, anytime - it's added to your personal balance. Type <b>!bet</b> to "
-    f"turn that balance into your bet (min {MIN_BET}g, max {MAX_BET}g - extra over the max is refunded).\n"
+    f"💰 Tip ANY amount of gold to the bot, anytime - it's added to your personal balance. Type <b>!bet</b> to bet "
+    f"your WHOLE balance, or <b>!bet 100g</b> / <b>!bet 1k</b> to bet just part of it and keep the rest saved "
+    f"(min {MIN_BET}g, max {MAX_BET}g per bet - accepted formats: 5g, 10g, 50g, 100g, 500g, 1000g/1k, 5000g/5k).\n"
     "🎮 Your game runs on its own, just for you - your cards are dealt 20 seconds after you !bet, even if other "
     "people are mid-game at the same time.\n"
     "🂡 You'll get 2 cards. Type <b>!hit</b> (or <b>!h</b>) to draw another, or <b>!stand</b> (or <b>!s</b>) to hold.\n"
@@ -170,6 +172,29 @@ def decompose_amount(amount: int) -> list:
             parts.append(key)
             remaining -= value
     return parts
+
+
+def parse_bet_amount(text: str):
+    # Accepts formats like "100", "100g", "1k", "5k". Returns an int gold
+    # amount, or None if it couldn't be parsed.
+    text = text.strip().lower()
+    if not text:
+        return None
+    multiplier = 1
+    if text.endswith("k"):
+        multiplier = 1000
+        text = text[:-1]
+    elif text.endswith("g"):
+        text = text[:-1]
+    if not text:
+        return None
+    try:
+        value = float(text)
+    except ValueError:
+        return None
+    if value <= 0:
+        return None
+    return int(round(value * multiplier))
 
 
 class HealthCheckHandler(BaseHTTPRequestHandler):
@@ -639,8 +664,11 @@ class Bot(BaseBot):
 
         is_owner = user.username.lower() == self.owner_username.lower()
 
-        # !bet - starts a personal round from this player's pending tip balance.
-        if clean_msg == "!bet":
+        # !bet or !bet <amount> - starts a personal round from this player's pending tip balance.
+        # Plain !bet uses the whole balance; !bet 100g / !bet 1k bets just that much and
+        # leaves the rest sitting in their balance for a future !bet.
+        bet_parts = clean_msg.split()
+        if bet_parts and bet_parts[0] == "!bet":
             if user.id in self.active_games:
                 await self.respond(user, "⏳ You already have a Blackjack round in progress! Finish it before starting another.", "whisper")
                 return
@@ -650,12 +678,41 @@ class Bot(BaseBot):
                 return
 
             username = entry["username"]
-            bet_amount = entry["amount"]
+            arg = bet_parts[1] if len(bet_parts) > 1 else None
             refund = 0
-            if bet_amount > MAX_BET:
-                refund = bet_amount - MAX_BET
-                bet_amount = MAX_BET
-            self.pending_tips.pop(user.id, None)
+
+            if arg is None:
+                # No amount given - bet the whole pending balance (original behavior).
+                bet_amount = entry["amount"]
+                if bet_amount > MAX_BET:
+                    refund = bet_amount - MAX_BET
+                    bet_amount = MAX_BET
+                self.pending_tips.pop(user.id, None)
+            else:
+                parsed = parse_bet_amount(arg)
+                if parsed is None:
+                    await self.respond(
+                        user,
+                        "⚠️ Couldn't read that bet amount. Try formats like !bet 5g, !bet 100g, !bet 1k, or !bet 5k.",
+                        "whisper",
+                    )
+                    return
+                if parsed < MIN_BET or parsed > MAX_BET:
+                    await self.respond(user, f"⚠️ Bet must be between {MIN_BET}g and {MAX_BET}g.", "whisper")
+                    return
+                if parsed > entry["amount"]:
+                    await self.respond(
+                        user,
+                        f"⚠️ You've only got {entry['amount']}g tipped - tip more or bet a smaller amount.",
+                        "whisper",
+                    )
+                    return
+                bet_amount = parsed
+                entry["amount"] -= bet_amount
+                if entry["amount"] <= 0:
+                    self.pending_tips.pop(user.id, None)
+                else:
+                    self.pending_tips[user.id] = entry
 
             fetched_gold = await self.get_wallet_gold()
             wallet_gold = fetched_gold if fetched_gold is not None else 0
@@ -675,6 +732,13 @@ class Bot(BaseBot):
                 await self.respond(
                     user,
                     f"⚠️ Max bet is {MAX_BET}g, so the extra {refund}g has been refunded. Starting your round with {bet_amount}g!",
+                    "whisper",
+                )
+            elif arg is not None:
+                remaining = self.pending_tips.get(user.id, {}).get("amount", 0)
+                await self.respond(
+                    user,
+                    f"✅ {bet_amount}g bet placed! {remaining}g remaining in your balance.",
                     "whisper",
                 )
 
