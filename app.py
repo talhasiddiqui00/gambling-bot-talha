@@ -393,11 +393,11 @@ class Bot(BaseBot):
     async def position_watchdog_loop(self) -> None:
         # Keeps the bot pinned to its !gset spot. Only teleports when the bot
         # has actually drifted or dropped out of the room's user list (e.g.
-        # after the room goes empty and Highrise resets it) - it does NOT
-        # teleport on a fixed schedule, so it won't cause extra flicker on
-        # top of fixing the disappearing issue.
+        # after the room goes empty and Highrise resets it) - it checks every
+        # 2 seconds so it snaps back almost instantly instead of sitting
+        # displaced for a while.
         while True:
-            await asyncio.sleep(30)
+            await asyncio.sleep(2)
             try:
                 saved = self.get_bot_position()
                 room_users = await self.highrise.get_room_users()
@@ -419,12 +419,13 @@ class Bot(BaseBot):
                 print(f"[POSITION WATCHDOG ERROR] {e}")
 
     async def welcome_announce_loop(self) -> None:
-        # Repeats the welcome/commands message publicly every minute. Personal
-        # games run independently of this, so it's safe to post regardless of
-        # how many rounds are currently in progress.
+        # Repeats the welcome/commands message publicly every minute, but only
+        # while the room is idle (no personal games currently running) - stays
+        # silent during active play so it doesn't clutter the round-flow chat.
         while True:
             await asyncio.sleep(WELCOME_INTERVAL_SECONDS)
-            await self.announce(WELCOME_TEXT)
+            if not self.active_games:
+                await self.announce(WELCOME_TEXT)
 
     # --- shared helpers ---
 
@@ -594,7 +595,7 @@ class Bot(BaseBot):
         asyncio.create_task(self.welcome_announce_loop())
 
     async def place_bot(self):
-        await asyncio.sleep(2.0)
+        await asyncio.sleep(1.0)
         pos = self.get_bot_position()
         if pos == Position(0, 0, 0, "FrontRight"):
             return
@@ -603,7 +604,7 @@ class Bot(BaseBot):
                 await self.highrise.teleport(self.bot_id, pos)
                 return
             except Exception:
-                await asyncio.sleep(2.0)
+                await asyncio.sleep(1.0)
 
     async def on_tip(self, sender: User, receiver: User, tip) -> None:
         if sender.id == self.bot_id or receiver.id != self.bot_id:
